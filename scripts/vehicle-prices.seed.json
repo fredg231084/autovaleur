@@ -1,0 +1,20 @@
+{
+  "_note": "PLACEHOLDER VALUES — DO NOT SEED AS-IS. Replace every market_value with a real typical-condition WHOLESALE number (CAD) from Perplexity before running the seed. market_value = the market number BEFORE your buy margin (the pricing engine applies buy_factor). make/model are normalized to lowercase by the script; year is an integer. This is a small starter set — extend it to your full Montréal car list.",
+  "prices": [
+    { "make": "Toyota", "model": "Corolla", "year": 2018, "market_value": 16000 },
+    { "make": "Toyota", "model": "RAV4", "year": 2018, "market_value": 23000 },
+    { "make": "Toyota", "model": "Camry", "year": 2017, "market_value": 18000 },
+    { "make": "Honda", "model": "Civic", "year": 2018, "market_value": 17000 },
+    { "make": "Honda", "model": "CR-V", "year": 2018, "market_value": 24000 },
+    { "make": "Honda", "model": "Accord", "year": 2017, "market_value": 18500 },
+    { "make": "Mazda", "model": "Mazda3", "year": 2017, "market_value": 14000 },
+    { "make": "Mazda", "model": "CX-5", "year": 2018, "market_value": 21000 },
+    { "make": "Hyundai", "model": "Elantra", "year": 2018, "market_value": 13000 },
+    { "make": "Hyundai", "model": "Tucson", "year": 2018, "market_value": 19000 },
+    { "make": "Nissan", "model": "Rogue", "year": 2017, "market_value": 17000 },
+    { "make": "Ford", "model": "Escape", "year": 2017, "market_value": 15000 },
+    { "make": "Ford", "model": "F-150", "year": 2018, "market_value": 32000 },
+    { "make": "Jeep", "model": "Grand Cherokee", "year": 2017, "market_value": 24000 },
+    { "make": "Volkswagen", "model": "Jetta", "year": 2018, "market_value": 15500 }
+  ]
+}
