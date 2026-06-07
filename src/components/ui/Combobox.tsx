@@ -17,7 +17,7 @@ export function Combobox({
   emptyLabel = "Aucun résultat",
 }: {
   label: string;
-  icon?: React.ComponentType<any>;
+  icon?: React.ComponentType<{ className?: string }>;
   placeholder?: string;
   value: string;
   onChange: (v: string) => void;
@@ -48,7 +48,7 @@ export function Combobox({
     function onDoc(e: MouseEvent) {
       const el = boxRef.current;
       if (!el) return;
-      if (!el.contains(e.target as any)) setOpen(false);
+      if (!el.contains(e.target as Node)) setOpen(false);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);

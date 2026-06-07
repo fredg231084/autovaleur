@@ -36,3 +36,10 @@ export function isValidPostal(p: string) {
 export function isValidEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
 }
+
+// North-American 10-digit (optionally 1-prefixed) phone. Mirrors the edge
+// function's check so the gate fails fast instead of round-tripping.
+export function isValidPhone(s: string) {
+  const d = (s || "").replace(/\D/g, "");
+  return d.length === 10 || (d.length === 11 && d.startsWith("1"));
+}

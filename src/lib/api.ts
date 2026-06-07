@@ -63,7 +63,7 @@ async function invokeCreateLead(body: Record<string, unknown>): Promise<LeadResu
 
   if (error) {
     // supabase-js wraps non-2xx as FunctionsHttpError with the Response in `context`.
-    const status = (error as any)?.context?.status;
+    const status = (error as { context?: { status?: number } })?.context?.status;
     if (status === 429) throw new LeadRateLimitError();
     console.error('create-lead error:', error);
     throw new LeadRequestError();

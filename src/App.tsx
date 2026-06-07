@@ -1,81 +1,69 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  Car,
-  Hash,
-  MapPin,
-  CalendarClock,
-  ShieldCheck,
-  CreditCard,
-  Banknote,
-  ArrowRight,
-  ArrowLeft,
-  CheckCircle2,
-  Info,
-  Mail,
-  Phone,
-  Clock,
-  MessageCircle,
-  Sparkles,
-  BadgeCheck,
-  Scale,
-} from "lucide-react";
-import { completeLead } from './lib/api';
-import { clamp, formatCad, prettyKm, normalizePostal, isValidPostal, isValidEmail } from "./lib/format";
+import { ShieldCheck, Sparkles } from "lucide-react";
+
+import { clamp, isValidEmail, isValidPhone, isValidPostal } from "./lib/format";
 import { generateTimeSlots, type SlotType, type TimeSlot } from "./lib/slots";
-import { MAKES, MODELS_BY_MAKE, CURRENT_YEAR, YEARS } from "./lib/vehicles";
+import { MODELS_BY_MAKE } from "./lib/vehicles";
+import {
+  createPartialLead,
+  completeLead,
+  LeadRateLimitError,
+} from "./lib/api";
+import { getVehicleEstimate, type VehicleEstimate } from "./lib/estimate";
+import { TERMS_URL, PRIVACY_URL } from "./lib/constants";
+import type { Step, Errors } from "./types";
+
 import { Badge } from "./components/ui/Badge";
-import { Field } from "./components/ui/Field";
-import { SkeletonSlots } from "./components/ui/SkeletonSlots";
-import { Combobox } from "./components/ui/Combobox";
+import { ActionBar } from "./components/ActionBar";
+import { Footer } from "./components/Footer";
+import { IntroStep } from "./components/steps/IntroStep";
+import { CarDetailsStep } from "./components/steps/CarDetailsStep";
+import { GateStep } from "./components/steps/GateStep";
+import { RevealStep } from "./components/steps/RevealStep";
+import { SlotsStep } from "./components/steps/SlotsStep";
+import { FinishStep } from "./components/steps/FinishStep";
 
-type Step = 0 | 1 | 2 | 3 | 4 | 5;
-
-type Errors = Partial<
-  Record<
-    | "year"
-    | "make"
-    | "model"
-    | "km"
-    | "drivable"
-    | "postal"
-    | "slot"
-    | "name"
-    | "phone"
-    | "email"
-    | "address"
-    | "terms"
-    | "inspection",
-    string
-  >
->;
+// Persisted across a refresh so the gate's partial lead is reused (never a
+// duplicate PARTIAL) until the booking completes. Per-tab; cleared on success.
+const LEAD_ID_KEY = "av_lead_id";
 
 export default function AutoValeurWidget() {
   const [step, setStep] = useState<Step>(0);
 
+  // Vehicle (step 1)
   const [year, setYear] = useState("");
   const [make, setMake] = useState("");
   const [model, setModel] = useState("");
   const [vin, setVin] = useState("");
   const [km, setKm] = useState<number>(120000);
-
   const [drivable, setDrivable] = useState<"oui" | "non">("oui");
 
+  // Contact (gate, step 2)
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [consentGate, setConsentGate] = useState(false);
+  const [honeypot, setHoneypot] = useState("");
+
+  // Early-capture lead + estimate
+  const [leadId, setLeadId] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<VehicleEstimate | null>(null);
+  const [estimateLoading, setEstimateLoading] = useState(false);
+  const [gateSubmitting, setGateSubmitting] = useState(false);
+  const [gateError, setGateError] = useState<string | null>(null);
+
+  // Slots (step 4)
   const [postal, setPostal] = useState("");
   const [slotType, setSlotType] = useState<SlotType>("today");
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [slots, setSlots] = useState<TimeSlot[]>([]);
   const [selectedSlotId, setSelectedSlotId] = useState<string>("");
 
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
+  // Finish (step 5)
   const [address, setAddress] = useState("");
-
   const [payPref, setPayPref] = useState<"interac" | "cash">("interac");
-
-  const [termsAccepted, setTermsAccepted] = useState(false);
-  const [inspectionAccepted, setInspectionAccepted] = useState(false);
+  const [consentFinish, setConsentFinish] = useState(false);
   const [marketingOptIn, setMarketingOptIn] = useState(false);
 
   const [submitted, setSubmitted] = useState(false);
@@ -85,49 +73,33 @@ export default function AutoValeurWidget() {
   const [stageKey, setStageKey] = useState(0);
   const [transitioning, setTransitioning] = useState(false);
 
-  const refYear = useRef<HTMLDivElement | null>(null);
-  const refMake = useRef<HTMLDivElement | null>(null);
-  const refModel = useRef<HTMLDivElement | null>(null);
-  const refKm = useRef<HTMLDivElement | null>(null);
-  const refPostal = useRef<HTMLDivElement | null>(null);
-  const refSlots = useRef<HTMLDivElement | null>(null);
-  const refName = useRef<HTMLDivElement | null>(null);
-  const refPhone = useRef<HTMLDivElement | null>(null);
-  const refEmail = useRef<HTMLDivElement | null>(null);
-  const refAddress = useRef<HTMLDivElement | null>(null);
-  const refTerms = useRef<HTMLDivElement | null>(null);
-  const refInspection = useRef<HTMLDivElement | null>(null);
+  const refYear = useRef<HTMLDivElement>(null);
+  const refMake = useRef<HTMLDivElement>(null);
+  const refModel = useRef<HTMLDivElement>(null);
+  const refKm = useRef<HTMLDivElement>(null);
+  const refDrivable = useRef<HTMLDivElement>(null);
+  const refName = useRef<HTMLDivElement>(null);
+  const refPhone = useRef<HTMLDivElement>(null);
+  const refConsentGate = useRef<HTMLDivElement>(null);
+  const refPostal = useRef<HTMLDivElement>(null);
+  const refSlots = useRef<HTMLDivElement>(null);
+  const refAddress = useRef<HTMLDivElement>(null);
+  const refConsentFinish = useRef<HTMLDivElement>(null);
+
+  // Reuse a partial lead created earlier this tab session (survives refresh).
+  useEffect(() => {
+    try {
+      const id = sessionStorage.getItem(LEAD_ID_KEY);
+      if (id) setLeadId(id);
+    } catch {
+      // sessionStorage unavailable — fine, we just can't dedupe across refresh.
+    }
+  }, []);
 
   const canComputeSlots = useMemo(() => isValidPostal(postal), [postal]);
-
   const vehicleLabel = useMemo(() => [year, make, model].filter(Boolean).join(" "), [year, make, model]);
-
-  const upTo = useMemo(() => {
-    const y = parseInt(year || String(CURRENT_YEAR - 8), 10);
-    const age = clamp(CURRENT_YEAR - y, 0, 20);
-    const base = 22000 - age * 900;
-    const mk = (make?.length || 4) * 130;
-    const md = (model?.length || 5) * 90;
-
-    const mileagePenalty = clamp((km - 140000) / 9000, -6, 10) * 110;
-    const drivableAdj = drivable === "non" ? -1800 : 0;
-
-    const ura = base + mk + md - mileagePenalty;
-    const ubo = ura - 4200 - 2000 - 900 + drivableAdj;
-
-    const rounded = Math.round(clamp(ubo, 1200, 65000) / 500) * 500;
-    return rounded;
-  }, [year, make, model, km, drivable]);
-
-  const comparison = useMemo(() => {
-    const seed = normalizePostal(postal || "H2X")
-      .split("")
-      .reduce((a, c) => a + c.charCodeAt(0), 0);
-    const autoValeur = clamp(72 + (seed % 17), 70, 90);
-    const prive = clamp(autoValeur - 18, 40, 70);
-    const dealer = clamp(prive - 18, 20, 55);
-    return { dealer, prive, autoValeur };
-  }, [postal]);
+  const modelsForMake = useMemo(() => MODELS_BY_MAKE[make] || [], [make]);
+  const selectedSlot = useMemo(() => slots.find((s) => s.id === selectedSlotId) || null, [slots, selectedSlotId]);
 
   useEffect(() => {
     if (!canComputeSlots) {
@@ -158,36 +130,38 @@ export default function AutoValeurWidget() {
     el.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
-  function validateStep(currentStep: Step): Errors {
+  // ---- Validation (per step) ----
+  function validateCar(): Errors {
     const e: Errors = {};
+    if (!year) e.year = "Choisissez une année.";
+    if (!make.trim()) e.make = "Choisissez une marque (ou écrivez-la).";
+    if (!model.trim()) e.model = "Choisissez un modèle (ou écrivez-le).";
+    if (km === null || km === undefined || km < 0) e.km = "Indiquez le kilométrage.";
+    return e;
+  }
 
-    if (currentStep >= 1) {
-      if (!year) e.year = "Choisissez une année.";
-      if (!make.trim()) e.make = "Choisissez une marque (ou écrivez-la).";
-      if (!model.trim()) e.model = "Choisissez un modèle (ou écrivez-le).";
-      if (km === null || km === undefined || km < 0) e.km = "Indiquez le kilométrage.";
-    }
+  function validateGate(): Errors {
+    const e: Errors = {};
+    if (!name.trim()) e.name = "Entrez votre nom.";
+    if (!phone.trim()) e.phone = "Entrez votre téléphone.";
+    else if (!isValidPhone(phone)) e.phone = "Numéro invalide (10 chiffres).";
+    if (email.trim() && !isValidEmail(email)) e.email = "Courriel invalide.";
+    if (!consentGate) e.consentGate = "Veuillez accepter pour voir votre estimation.";
+    return e;
+  }
 
-    if (currentStep >= 2) {
-      if (!drivable) e.drivable = "Choisissez si le véhicule roule.";
-    }
+  function validateSlots(): Errors {
+    const e: Errors = {};
+    if (!isValidPostal(postal)) e.postal = "Entrez un code postal (au moins 3 caractères).";
+    if (isValidPostal(postal) && !selectedSlotId) e.slot = "Choisissez une heure d'arrivée.";
+    return e;
+  }
 
-    if (currentStep >= 4) {
-      if (!isValidPostal(postal)) e.postal = "Entrez un code postal (au moins 3 caractères).";
-      if (isValidPostal(postal) && !selectedSlotId) e.slot = "Choisissez une heure d'arrivée.";
-    }
-
-    if (currentStep >= 5) {
-      if (!name.trim()) e.name = "Entrez votre nom.";
-      if (!phone.trim()) e.phone = "Entrez votre téléphone.";
-      if (!email.trim()) e.email = "Entrez votre courriel.";
-      else if (!isValidEmail(email)) e.email = "Courriel invalide.";
-      if (!address.trim()) e.address = "Entrez votre adresse complète.";
-
-      if (!termsAccepted) e.terms = "Veuillez accepter les conditions et la politique de confidentialité.";
-      if (!inspectionAccepted) e.inspection = "Veuillez accepter la vérification sur place.";
-    }
-
+  function validateFinish(): Errors {
+    const e: Errors = {};
+    if (!address.trim()) e.address = "Entrez votre adresse complète.";
+    if (email.trim() && !isValidEmail(email)) e.email = "Courriel invalide.";
+    if (!consentFinish) e.consent = "Veuillez accepter pour réserver.";
     return e;
   }
 
@@ -196,15 +170,20 @@ export default function AutoValeurWidget() {
     if (e.make) return refMake;
     if (e.model) return refModel;
     if (e.km) return refKm;
-    if (e.postal) return refPostal;
-    if (e.slot) return refSlots;
+    if (e.drivable) return refDrivable;
     if (e.name) return refName;
     if (e.phone) return refPhone;
-    if (e.email) return refEmail;
+    if (e.consentGate) return refConsentGate;
+    if (e.postal) return refPostal;
+    if (e.slot) return refSlots;
     if (e.address) return refAddress;
-    if (e.terms) return refTerms;
-    if (e.inspection) return refInspection;
+    if (e.consent) return refConsentFinish;
     return null;
+  }
+
+  function scrollFirst(e: Errors) {
+    const r = firstErrorRef(e);
+    if (r) scrollToRef(r);
   }
 
   async function magicNavigate(nextStep: Step) {
@@ -216,98 +195,174 @@ export default function AutoValeurWidget() {
     setTransitioning(false);
 
     window.setTimeout(() => {
+      if (nextStep === 2) scrollToRef(refPhone);
       if (nextStep === 4) scrollToRef(refPostal);
-      if (nextStep === 5) scrollToRef(refName);
+      if (nextStep === 5) scrollToRef(refAddress);
     }, 120);
   }
 
-  function goNext() {
-    const nextStep = clamp(step + 1, 0, 5) as Step;
-
-    const e = validateStep(step);
+  // Gate submit: create the PARTIAL lead (early capture) and fetch the real
+  // estimate, then advance to the reveal. Reuses an existing lead_id so going
+  // Back and forward never inserts a second PARTIAL.
+  async function submitGate(): Promise<boolean> {
+    const e = validateGate();
     setErrors(e);
+    if (e.name || e.phone || e.email || e.consentGate) {
+      scrollFirst(e);
+      return false;
+    }
 
-    const blocking =
-      (step === 1 && (e.year || e.make || e.model || e.km)) ||
-      (step === 2 && e.drivable) ||
-      (step === 4 && (e.postal || e.slot));
+    setGateError(null);
+    setGateSubmitting(true);
+    try {
+      if (!leadId) {
+        const res = await createPartialLead({
+          vehicle_year: year,
+          vehicle_make: make,
+          vehicle_model: model,
+          vin,
+          km,
+          drivable: drivable === "oui",
+          client_name: name,
+          client_phone: phone,
+          client_email: email.trim() || undefined,
+          marketing_opt_in: marketingOptIn,
+          honeypot,
+        });
+        setLeadId(res.lead_id);
+        try {
+          sessionStorage.setItem(LEAD_ID_KEY, res.lead_id);
+        } catch {
+          // ignore storage failures
+        }
+      }
 
-    if (blocking) {
-      const r = firstErrorRef(e);
-      if (r) scrollToRef(r);
+      // Real range from the SECURITY DEFINER RPC. Best-effort: a null/failed
+      // lookup just shows the "on confirme par téléphone" fallback at reveal.
+      setEstimateLoading(true);
+      const est = await getVehicleEstimate(make, model, year, km).catch(() => null);
+      setEstimate(est);
+      setEstimateLoading(false);
+      return true;
+    } catch (err) {
+      if (err instanceof LeadRateLimitError) {
+        setGateError("Trop de tentatives. Patientez une minute puis réessayez.");
+      } else {
+        setGateError("Connexion impossible pour le moment.");
+      }
+      return false;
+    } finally {
+      setGateSubmitting(false);
+    }
+  }
+
+  async function goNext() {
+    if (transitioning || gateSubmitting) return;
+
+    if (step === 1) {
+      const e = validateCar();
+      setErrors(e);
+      if (e.year || e.make || e.model || e.km) {
+        scrollFirst(e);
+        return;
+      }
+      magicNavigate(2);
       return;
     }
 
-    magicNavigate(nextStep);
+    if (step === 2) {
+      const ok = await submitGate();
+      if (ok) magicNavigate(3);
+      return;
+    }
+
+    if (step === 4) {
+      const e = validateSlots();
+      setErrors(e);
+      if (e.postal || e.slot) {
+        scrollFirst(e);
+        return;
+      }
+      magicNavigate(5);
+      return;
+    }
+
+    // Steps 0 and 3 just advance.
+    magicNavigate(clamp(step + 1, 0, 5) as Step);
   }
 
   function goBack() {
     setErrors({});
-    const prev = clamp(step - 1, 0, 5) as Step;
-    magicNavigate(prev);
+    setGateError(null);
+    magicNavigate(clamp(step - 1, 0, 5) as Step);
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    const v = validateStep(5);
+  async function submit(ev: React.FormEvent) {
+    ev.preventDefault();
+    const v = validateFinish();
     setErrors(v);
-
-    if (Object.keys(v).length) {
-      const r = firstErrorRef(v);
-      if (r) scrollToRef(r);
+    if (v.address || v.email || v.consent) {
+      scrollFirst(v);
       return;
     }
 
     try {
       setSubmitting(true);
-
       await completeLead({
+        lead_id: leadId || undefined,
         vehicle_year: year,
         vehicle_make: make,
         vehicle_model: model,
-        vin: vin,
-        km: km,
-        drivable: drivable === 'oui',
+        vin,
+        km,
+        drivable: drivable === "oui",
         postal_code: postal,
         slot_type: slotType,
         selected_slot_id: selectedSlotId,
-        selected_slot_datetime: selectedSlot?.start.toISOString() || '',
+        selected_slot_datetime: selectedSlot?.start.toISOString() || "",
         client_name: name,
         client_phone: phone,
-        client_email: email,
+        client_email: email.trim() || undefined,
         client_address: address,
         payment_preference: payPref,
-        terms_accepted: termsAccepted,
-        inspection_accepted: inspectionAccepted,
+        terms_accepted: consentFinish,
+        inspection_accepted: consentFinish,
         marketing_opt_in: marketingOptIn,
+        honeypot,
       });
+      try {
+        sessionStorage.removeItem(LEAD_ID_KEY);
+      } catch {
+        // ignore
+      }
       setSubmitted(true);
-    } catch (error) {
-      console.error('Submission failed:', error);
-      alert('Une erreur est survenue. Veuillez réessayer.');
+    } catch (err) {
+      console.error("Submission failed:", err);
+      if (err instanceof LeadRateLimitError) {
+        alert("Trop de tentatives. Patientez une minute puis réessayez.");
+      } else {
+        alert("Une erreur est survenue. Veuillez réessayer.");
+      }
     } finally {
       setSubmitting(false);
     }
   }
 
-  const selectedSlot = useMemo(() => slots.find((s) => s.id === selectedSlotId) || null, [slots, selectedSlotId]);
-  const modelsForMake = useMemo(() => MODELS_BY_MAKE[make] || [], [make]);
-
   const primaryCtaLabel = useMemo(() => {
     if (step === 0) return "Commencer";
+    if (step === 2) return gateSubmitting ? "Un instant…" : "Voir mon estimation";
     if (step === 3) return "Choisir mon créneau d'évaluation gratuite";
-    if (step === 4) return "Continuer";
     if (step === 5) return submitting ? "Envoi en cours..." : "Réserver l'évaluation gratuite à domicile";
     return "Continuer";
-  }, [step, submitting]);
+  }, [step, submitting, gateSubmitting]);
 
   const helperText = useMemo(() => {
     if (step === 0) return "60 secondes • Sans obligation";
-    if (step === 1) return "Détails du véhicule";
-    if (step === 2) return "État du véhicule";
-    if (step === 3) return "Votre estimation AutoValeur";
+    if (step === 1) return "Votre véhicule";
+    if (step === 2) return "Vos coordonnées";
+    if (step === 3) return "Votre estimation";
     if (step === 4) return "Choisir une plage horaire";
-    if (step === 5) return "Infos + consentements";
+    if (step === 5) return "Finaliser la réservation";
     return "";
   }, [step]);
 
@@ -363,7 +418,7 @@ export default function AutoValeurWidget() {
                 >
                   {step === 0 && <IntroStep />}
                   {step === 1 && (
-                    <VehicleStep
+                    <CarDetailsStep
                       year={year}
                       setYear={setYear}
                       make={make}
@@ -374,6 +429,8 @@ export default function AutoValeurWidget() {
                       setVin={setVin}
                       km={km}
                       setKm={setKm}
+                      drivable={drivable}
+                      setDrivable={setDrivable}
                       modelsForMake={modelsForMake}
                       errors={errors}
                       setErrors={setErrors}
@@ -381,12 +438,34 @@ export default function AutoValeurWidget() {
                       refMake={refMake}
                       refModel={refModel}
                       refKm={refKm}
+                      refDrivable={refDrivable}
                     />
                   )}
                   {step === 2 && (
-                    <EtatStep drivable={drivable} setDrivable={setDrivable} errors={errors} setErrors={setErrors} />
+                    <GateStep
+                      name={name}
+                      setName={setName}
+                      phone={phone}
+                      setPhone={setPhone}
+                      email={email}
+                      setEmail={setEmail}
+                      consentGate={consentGate}
+                      setConsentGate={setConsentGate}
+                      honeypot={honeypot}
+                      setHoneypot={setHoneypot}
+                      gateError={gateError}
+                      errors={errors}
+                      setErrors={setErrors}
+                      refName={refName}
+                      refPhone={refPhone}
+                      refConsent={refConsentGate}
+                      termsHref={TERMS_URL}
+                      privacyHref={PRIVACY_URL}
+                    />
                   )}
-                  {step === 3 && <PriceStep upTo={upTo} comparison={comparison} />}
+                  {step === 3 && (
+                    <RevealStep estimate={estimate} estimateLoading={estimateLoading} />
+                  )}
                   {step === 4 && (
                     <SlotsStep
                       postal={postal}
@@ -405,37 +484,31 @@ export default function AutoValeurWidget() {
                     />
                   )}
                   {step === 5 && (
-                    <BookingStep
+                    <FinishStep
                       submitted={submitted}
                       vehicleLabel={vehicleLabel}
                       km={km}
-                      upTo={upTo}
+                      drivable={drivable}
+                      estimate={estimate}
                       selectedSlot={selectedSlot}
                       payPref={payPref}
+                      setPayPref={setPayPref}
                       address={address}
-                      name={name}
-                      setName={setName}
-                      phone={phone}
-                      setPhone={setPhone}
+                      setAddress={setAddress}
                       email={email}
                       setEmail={setEmail}
-                      setAddress={setAddress}
-                      setPayPref={setPayPref}
-                      termsAccepted={termsAccepted}
-                      setTermsAccepted={setTermsAccepted}
-                      inspectionAccepted={inspectionAccepted}
-                      setInspectionAccepted={setInspectionAccepted}
+                      consentFinish={consentFinish}
+                      setConsentFinish={setConsentFinish}
                       marketingOptIn={marketingOptIn}
                       setMarketingOptIn={setMarketingOptIn}
+                      honeypot={honeypot}
+                      setHoneypot={setHoneypot}
                       errors={errors}
                       setErrors={setErrors}
-                      refName={refName}
-                      refPhone={refPhone}
-                      refEmail={refEmail}
                       refAddress={refAddress}
-                      refTerms={refTerms}
-                      refInspection={refInspection}
-                      drivable={drivable}
+                      refConsent={refConsentFinish}
+                      termsHref={TERMS_URL}
+                      privacyHref={PRIVACY_URL}
                     />
                   )}
                 </motion.div>
@@ -446,6 +519,7 @@ export default function AutoValeurWidget() {
                 transitioning={transitioning}
                 submitted={submitted}
                 submitting={submitting}
+                busy={gateSubmitting}
                 goBack={goBack}
                 goNext={goNext}
                 primaryCtaLabel={primaryCtaLabel}
@@ -458,1105 +532,6 @@ export default function AutoValeurWidget() {
 
         <Footer />
       </div>
-    </div>
-  );
-}
-
-function IntroStep() {
-  return (
-    <div className="rounded-3xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 p-6 sm:p-8">
-      <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-        <Sparkles className="h-4 w-4" />
-        Expérience premium • ~60 secondes
-      </div>
-
-      <div className="mt-3 text-2xl font-extrabold tracking-tight text-slate-900 sm:text-3xl">
-        Vendez votre auto — simplement, rapidement
-      </div>
-      <div className="mt-2 max-w-2xl text-sm text-slate-600">
-        Donnez quelques détails, découvrez votre estimation <span className="font-semibold">AutoValeur</span>,
-        puis réservez une visite gratuite à domicile pour confirmer l'offre.
-      </div>
-
-      <div className="mt-6 grid gap-3">
-        {[
-          {
-            icon: BadgeCheck,
-            title: "Estimation instantanée",
-            desc: "On affiche une estimation optimiste (« jusqu'à ») en quelques secondes.",
-          },
-          {
-            icon: CalendarClock,
-            title: "Créneaux réalistes",
-            desc: "Choisissez une plage horaire (semaine 9h–17h).",
-          },
-          {
-            icon: Banknote,
-            title: "Paiement sur place",
-            desc: "Comptant ou virement Interac, selon votre préférence.",
-          },
-        ].map((row) => (
-          <div
-            key={row.title}
-            className="flex items-start gap-3 rounded-2xl bg-white p-4 ring-1 ring-inset ring-slate-200"
-          >
-            <div className="mt-0.5 rounded-2xl bg-slate-900 p-2 text-white">
-              <row.icon className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-sm font-extrabold text-slate-900">{row.title}</div>
-              <div className="mt-1 text-sm text-slate-600">{row.desc}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-4">
-        <div className="flex items-start gap-3">
-          <Info className="mt-0.5 h-5 w-5 text-slate-600" />
-          <div className="text-sm text-slate-700">
-            L'estimation affichée est un <span className="font-semibold">"jusqu'à"</span>. Le montant final est confirmé
-            après vérification sur place (état + kilométrage).
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function VehicleStep({
-  year,
-  setYear,
-  make,
-  setMake,
-  model,
-  setModel,
-  vin,
-  setVin,
-  km,
-  setKm,
-  modelsForMake,
-  errors,
-  setErrors,
-  refYear,
-  refMake,
-  refModel,
-  refKm,
-}: any) {
-  return (
-    <div className="grid gap-5">
-      <div className="grid gap-5 sm:grid-cols-3">
-        <div ref={refYear}>
-          <Field label="Année" icon={Car} error={errors.year}>
-            <select
-              value={year}
-              onChange={(e) => {
-                setYear(e.target.value);
-                setErrors((p: any) => ({ ...p, year: undefined }));
-              }}
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-900/10 focus:ring-4"
-            >
-              <option value="">Choisir</option>
-              {YEARS.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
-
-        <div ref={refMake}>
-          <Combobox
-            label="Marque"
-            icon={Car}
-            value={make}
-            onChange={(v) => {
-              setMake(v);
-              setErrors((p: any) => ({ ...p, make: undefined, model: undefined }));
-              if (v !== make) setModel("");
-            }}
-            options={MAKES}
-            placeholder="Chercher une marque (ex: Toyota)"
-            hint="Liste contrôlée + saisie manuelle possible"
-            error={errors.make}
-            onPick={(v) => {
-              setMake(v);
-              setModel("");
-            }}
-          />
-        </div>
-
-        <div ref={refModel}>
-          <Combobox
-            label="Modèle"
-            icon={Car}
-            value={model}
-            onChange={(v) => {
-              setModel(v);
-              setErrors((p: any) => ({ ...p, model: undefined }));
-            }}
-            options={modelsForMake.length ? modelsForMake : ["(Choisissez d'abord une marque)"]}
-            placeholder={make ? "Chercher un modèle (ex: RAV4)" : "Choisissez d'abord une marque"}
-            hint={make ? "Liste contrôlée + saisie manuelle possible" : "Sélectionnez une marque"}
-            error={errors.model}
-            allowManual={!!make}
-            emptyLabel={make ? "Aucun modèle trouvé — écrivez-le manuellement" : "Choisissez une marque"}
-          />
-        </div>
-      </div>
-
-      <div ref={refKm}>
-        <Field label="Kilométrage (approx.)" hint="Glissez pour arrondir" icon={Hash} error={errors.km}>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-bold text-slate-900">{prettyKm(km)} km</div>
-              <Badge>{km <= 80000 ? "Bas" : km <= 160000 ? "Moyen" : "Élevé"}</Badge>
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={350000}
-              step={5000}
-              value={km}
-              onChange={(e) => {
-                setKm(parseInt(e.target.value, 10));
-                setErrors((p: any) => ({ ...p, km: undefined }));
-              }}
-              className="mt-3 w-full"
-            />
-            <div className="mt-2 flex justify-between text-[11px] text-slate-500">
-              <span>0</span>
-              <span>175k</span>
-              <span>350k</span>
-            </div>
-          </div>
-        </Field>
-      </div>
-
-      <Field label="VIN (optionnel)" hint="Accélère certaines vérifications" icon={Hash}>
-        <input
-          value={vin}
-          onChange={(e) => setVin(e.target.value)}
-          placeholder="17 caractères (optionnel)"
-          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-900/10 focus:ring-4"
-          autoComplete="off"
-        />
-        <p className="mt-2 text-xs text-slate-500">
-          Optionnel. Utilisé uniquement pour confirmer certains détails (ex: caractéristiques). Pas obligatoire.
-        </p>
-      </Field>
-
-      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-        <div className="flex items-start gap-3">
-          <ShieldCheck className="mt-0.5 h-5 w-5 text-slate-700" />
-          <div>
-            <div className="text-sm font-semibold text-slate-900">Données propres = meilleure estimation</div>
-            <div className="mt-1 text-sm text-slate-600">
-              On contrôle marque/modèle pour optimiser la précision et la rapidité du processus.
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function EtatStep({ drivable, setDrivable, errors, setErrors }: any) {
-  return (
-    <div className="grid gap-5">
-      <Field label="Le véhicule peut-il rouler ?" icon={Car} error={errors.drivable}>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => {
-              setDrivable("oui");
-              setErrors((p: any) => ({ ...p, drivable: undefined }));
-            }}
-            className={
-              "rounded-2xl border p-4 text-left shadow-sm transition " +
-              (drivable === "oui"
-                ? "border-slate-900 bg-slate-900 text-white"
-                : "border-slate-200 bg-white hover:shadow-md")
-            }
-          >
-            <div className="text-sm font-semibold">Oui, il roule</div>
-            <div className={"mt-1 text-xs " + (drivable === "oui" ? "text-white/80" : "text-slate-600")}>
-              Évaluation standard, paiement rapide
-            </div>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setDrivable("non");
-              setErrors((p: any) => ({ ...p, drivable: undefined }));
-            }}
-            className={
-              "rounded-2xl border p-4 text-left shadow-sm transition " +
-              (drivable === "non"
-                ? "border-slate-900 bg-slate-900 text-white"
-                : "border-slate-200 bg-white hover:shadow-md")
-            }
-          >
-            <div className="text-sm font-semibold">Non, il ne roule pas</div>
-            <div className={"mt-1 text-xs " + (drivable === "non" ? "text-white/80" : "text-slate-600")}>
-              On peut quand même évaluer — selon le cas
-            </div>
-          </button>
-        </div>
-      </Field>
-
-      <div className="rounded-2xl bg-white p-4 ring-1 ring-inset ring-slate-200">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="text-xs font-semibold text-slate-600">Prochaine étape</div>
-            <div className="mt-1 text-sm font-bold text-slate-900">On vous dévoile votre estimation AutoValeur.</div>
-            <div className="mt-1 text-xs text-slate-500">Le montant final sera confirmé après vérification sur place.</div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Badge tone="green">Visite gratuite</Badge>
-            <Badge>Sans obligation</Badge>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PriceStep({ upTo, comparison }: any) {
-  return (
-    <div className="grid gap-5">
-      <div className="rounded-3xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 p-6 sm:p-7">
-        <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-          <Sparkles className="h-4 w-4" />
-          Primeur • Estimation AutoValeur
-        </div>
-
-        <div className="mt-3 text-xl font-extrabold tracking-tight text-slate-900 sm:text-2xl">
-          Bonne nouvelle — votre estimation est prête
-        </div>
-        <div className="mt-2 text-sm text-slate-600">
-          Basée sur vos informations et le marché actuel (dans votre région).
-        </div>
-
-        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="text-xs font-semibold text-slate-600">Votre estimation (optimiste)</div>
-          <div className="mt-2 text-4xl font-extrabold tracking-tight text-slate-900 sm:text-6xl">
-            Jusqu'à {formatCad(upTo)}
-          </div>
-          <div className="mt-2 text-sm text-slate-700">
-            Paiement possible le jour même — <span className="font-semibold">comptant</span> ou{" "}
-            <span className="font-semibold">virement Interac</span>.
-          </div>
-
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Badge tone="green">Sans obligation</Badge>
-            <Badge tone="green">Visite gratuite</Badge>
-            <Badge tone="amber">Très demandé</Badge>
-            <Badge>Données sécurisées</Badge>
-          </div>
-
-          <div className="mt-4 rounded-2xl bg-slate-50 p-4 ring-1 ring-inset ring-slate-100">
-            <div className="flex items-start gap-3">
-              <Info className="mt-0.5 h-5 w-5 text-slate-600" />
-              <div className="text-sm text-slate-700">
-                Le montant final est confirmé après vérification sur place (état réel + kilométrage).
-                Vous êtes libre d'accepter ou de refuser.
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-5 rounded-3xl border border-slate-200 bg-white p-5">
-          <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900">
-            <Scale className="h-5 w-5" />
-            Comment ça se situe ?
-          </div>
-          <div className="mt-2 text-sm text-slate-600">
-            Comparaison indicative — chaque offre dépend du véhicule et de son état réel.
-          </div>
-
-          <div className="mt-4 space-y-3">
-            {[
-              { label: "Reprise concession", value: comparison.dealer, note: "Souvent plus bas" },
-              { label: "Vente privée", value: comparison.prive, note: "Plus élevé, mais plus long/risqué" },
-              { label: "AutoValeur", value: comparison.autoValeur, note: "Rapide, sécurisé", strong: true },
-            ].map((row) => (
-              <div key={row.label} className="grid gap-2">
-                <div className="flex items-center justify-between text-xs">
-                  <div className={"font-semibold " + (row.strong ? "text-slate-900" : "text-slate-700")}>
-                    {row.label} {row.strong ? "✅" : ""}
-                  </div>
-                  <div className="text-slate-500">{row.note}</div>
-                </div>
-                <div className="h-2.5 w-full rounded-full bg-slate-100 ring-1 ring-inset ring-slate-200">
-                  <div
-                    className={"h-2.5 rounded-full " + (row.strong ? "bg-slate-900" : "bg-slate-400")}
-                    style={{ width: `${row.value}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-3 text-[11px] text-slate-500">
-            *Comparaison indicative — ne constitue pas une offre ferme.
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SlotsStep({
-  postal,
-  setPostal,
-  slotType,
-  setSlotType,
-  canComputeSlots,
-  slotsLoading,
-  slots,
-  selectedSlotId,
-  setSelectedSlotId,
-  errors,
-  setErrors,
-  refPostal,
-  refSlots,
-}: any) {
-  return (
-    <div className="grid gap-5">
-      <div ref={refPostal}>
-        <Field
-          label="Code postal"
-          hint="Obligatoire pour déverrouiller les créneaux"
-          icon={MapPin}
-          error={errors.postal}
-        >
-          <input
-            value={postal}
-            onChange={(e) => {
-              const next = e.target.value.toUpperCase();
-              setPostal(next);
-              setErrors((p: any) => ({ ...p, postal: undefined, slot: undefined }));
-            }}
-            placeholder="Ex: H2X 1Y4"
-            inputMode="text"
-            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-900/10 focus:ring-4"
-            autoComplete="postal-code"
-          />
-          <div className="mt-2 rounded-2xl bg-slate-50 p-3 text-sm text-slate-700 ring-1 ring-inset ring-slate-200">
-            <span className="font-semibold">Important :</span> entrez votre code postal d'abord. Ensuite, les disponibilités
-            se chargent automatiquement (2–5 secondes).
-          </div>
-        </Field>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        {[
-          { id: "today" as const, title: "Aujourd'hui", sub: "Disponibilité limitée", badge: "Rapide", tone: "green" as const },
-          { id: "tomorrow" as const, title: "Demain", sub: "Très demandé", badge: "Populaire", tone: "amber" as const },
-          { id: "week" as const, title: "Cette semaine", sub: "Plusieurs options", badge: "Flexible", tone: "neutral" as const },
-        ].map((card) => {
-          const selected = slotType === card.id;
-          return (
-            <button
-              key={card.id}
-              type="button"
-              onClick={() => setSlotType(card.id)}
-              className={
-                "group w-full rounded-2xl border p-4 text-left shadow-sm transition hover:shadow-md " +
-                (selected ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white")
-              }
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className={"text-sm font-semibold " + (selected ? "text-white" : "text-slate-900")}>
-                    {card.title}
-                  </div>
-                  <div className={"mt-1 text-xs " + (selected ? "text-white/80" : "text-slate-600")}>
-                    {card.sub}
-                  </div>
-                </div>
-                <div className="shrink-0">
-                  <span
-                    className={
-                      "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset " +
-                      (selected
-                        ? "bg-white/15 text-white ring-white/20"
-                        : card.tone === "green"
-                        ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-                        : card.tone === "amber"
-                        ? "bg-amber-50 text-amber-700 ring-amber-200"
-                        : "bg-slate-50 text-slate-700 ring-slate-200")
-                    }
-                  >
-                    {card.badge}
-                  </span>
-                </div>
-              </div>
-              <div className="mt-3 flex items-center gap-2 text-xs">
-                <CalendarClock className={"h-4 w-4 " + (selected ? "text-white/80" : "text-slate-500")} />
-                <span className={selected ? "text-white/80" : "text-slate-600"}>Heures: 9h à 17h (semaine)</span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      <div
-        ref={refSlots}
-        className={
-          "rounded-2xl border bg-white p-4 transition " +
-          (canComputeSlots ? "border-slate-200" : "border-slate-200 opacity-60")
-        }
-      >
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <div className="text-xs font-semibold text-slate-600">Créneau d'arrivée</div>
-            <div className="mt-1 text-sm font-bold text-slate-900">
-              {canComputeSlots
-                ? selectedSlotId && slots.find((s: any) => s.id === selectedSlotId)?.label
-                  ? slots.find((s: any) => s.id === selectedSlotId)?.label
-                  : "Choisissez un créneau"
-                : "🔒 Déverrouillez en entrant votre code postal"}
-            </div>
-            <div className="mt-1 text-xs text-slate-500">Heures: 9:00 AM à 5:00 PM (semaine seulement).</div>
-          </div>
-          <div className="hidden sm:flex flex-col items-end gap-2">
-            <Badge tone="green">Gratuit</Badge>
-            <Badge tone="amber">Confirmation sur place</Badge>
-          </div>
-        </div>
-
-        <AnimatePresence>
-          {errors.slot ? (
-            <motion.div
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800"
-            >
-              {errors.slot}
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-
-        {canComputeSlots ? (
-          slotsLoading ? (
-            <SkeletonSlots />
-          ) : (
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {slots.map((s: any) => {
-                const selected = s.id === selectedSlotId;
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedSlotId(s.id);
-                      setErrors((p: any) => ({ ...p, slot: undefined }));
-                    }}
-                    className={
-                      "rounded-2xl border px-3 py-3 text-left text-sm font-semibold shadow-sm transition " +
-                      (selected
-                        ? "border-slate-900 bg-slate-900 text-white"
-                        : "border-slate-200 bg-white hover:shadow-md")
-                    }
-                  >
-                    <div className={selected ? "text-white" : "text-slate-900"}>{s.label}</div>
-                    <div className={"mt-1 flex items-center gap-2 text-xs " + (selected ? "text-white/80" : "text-slate-600")}>
-                      <Clock className="h-4 w-4" />
-                      <span>Arrivée prévue</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )
-        ) : (
-          <div className="mt-3 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
-            Entrez votre code postal pour afficher des créneaux.
-          </div>
-        )}
-      </div>
-
-      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-        <div className="flex items-start gap-3">
-          <MessageCircle className="mt-0.5 h-5 w-5 text-slate-700" />
-          <div className="w-full">
-            <div className="text-sm font-semibold text-slate-900">Aucune plage ne vous convient ?</div>
-            <div className="mt-1 text-sm text-slate-600">
-              Contactez-nous — réponse instantanée ou rappel en <span className="font-semibold">15 minutes</span>.
-            </div>
-
-            <div className="mt-3 grid gap-2 sm:grid-cols-3">
-              <a
-                href="tel:5141234567"
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-slate-900 ring-1 ring-inset ring-slate-200 hover:shadow-sm"
-              >
-                <Phone className="h-4 w-4" />
-                514-123-4567
-              </a>
-              <a
-                href="mailto:info@autovaleur.ca"
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-slate-900 ring-1 ring-inset ring-slate-200 hover:shadow-sm"
-              >
-                <Mail className="h-4 w-4" />
-                info@autovaleur.ca
-              </a>
-              <button
-                type="button"
-                onClick={() => alert("Chat: branchez votre widget (Intercom, Crisp, Tawk, etc.).")}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-extrabold text-white hover:shadow-md"
-              >
-                <MessageCircle className="h-4 w-4" />
-                Démarrer un chat
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BookingStep({
-  submitted,
-  vehicleLabel,
-  km,
-  upTo,
-  selectedSlot,
-  payPref,
-  address,
-  name,
-  setName,
-  phone,
-  setPhone,
-  email,
-  setEmail,
-  setAddress,
-  setPayPref,
-  termsAccepted,
-  setTermsAccepted,
-  inspectionAccepted,
-  setInspectionAccepted,
-  marketingOptIn,
-  setMarketingOptIn,
-  errors,
-  setErrors,
-  refName,
-  refPhone,
-  refEmail,
-  refAddress,
-  refTerms,
-  refInspection,
-  drivable,
-}: any) {
-  if (submitted) {
-    return (
-      <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-6">
-        <div className="flex items-start gap-3">
-          <CheckCircle2 className="mt-0.5 h-6 w-6 text-emerald-700" />
-          <div className="w-full">
-            <div className="text-lg font-extrabold text-emerald-900">Évaluation réservée ✅</div>
-            <div className="mt-1 text-sm text-emerald-800">
-              Un évaluateur se déplacera à votre adresse pour confirmer l'état du véhicule et finaliser l'offre.
-            </div>
-
-            <div className="mt-4 rounded-2xl bg-white/70 p-4 ring-1 ring-inset ring-emerald-200">
-              <div className="text-xs font-semibold text-emerald-900">Résumé</div>
-              <div className="mt-2 grid gap-2 text-sm text-emerald-900 sm:grid-cols-2">
-                <div>
-                  <div className="text-xs text-emerald-800">Véhicule</div>
-                  <div className="font-semibold">{vehicleLabel || "—"}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-emerald-800">Kilométrage</div>
-                  <div className="font-semibold">{prettyKm(km)} km</div>
-                </div>
-                <div>
-                  <div className="text-xs text-emerald-800">Estimation</div>
-                  <div className="font-semibold">Jusqu'à {formatCad(upTo)}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-emerald-800">Créneau</div>
-                  <div className="font-semibold">{selectedSlot ? selectedSlot.label : "—"}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-emerald-800">Paiement</div>
-                  <div className="font-semibold">{payPref === "cash" ? "Comptant" : "Virement Interac"}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-emerald-800">Adresse</div>
-                  <div className="font-semibold">{address || "—"}</div>
-                </div>
-              </div>
-
-              <div className="mt-4 rounded-2xl bg-white p-4 ring-1 ring-inset ring-emerald-200">
-                <div className="text-xs font-semibold text-emerald-900">À préparer (checklist)</div>
-                <ul className="mt-2 list-disc pl-5 text-sm text-emerald-900">
-                  <li>Clés (et 2e clé si disponible)</li>
-                  <li>Immatriculation / documents du véhicule</li>
-                  <li>Pièce d'identité</li>
-                  <li>Info utile (pneus, réparations récentes, etc.)</li>
-                </ul>
-                <div className="mt-2 text-xs text-emerald-800">
-                  Le kilométrage et l'état réel seront vérifiés sur place avant confirmation du montant final.
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-100/60 p-4">
-              <div className="flex items-start gap-3">
-                <MessageCircle className="mt-0.5 h-5 w-5 text-emerald-800" />
-                <div className="text-sm text-emerald-900">
-                  Besoin d'ajuster l'heure ? Appelez{" "}
-                  <a className="font-bold underline" href="tel:5141234567">
-                    514-123-4567
-                  </a>{" "}
-                  ou écrivez à{" "}
-                  <a className="font-bold underline" href="mailto:info@autovaleur.ca">
-                    info@autovaleur.ca
-                  </a>
-                  .
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <div className="rounded-2xl bg-white p-4 ring-1 ring-inset ring-slate-200">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="text-xs font-semibold text-slate-600">Votre estimation</div>
-            <div className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">
-              Jusqu'à {formatCad(upTo)}
-            </div>
-            <div className="mt-1 text-xs text-slate-500">
-              Le prix final est confirmé après vérification sur place (état + kilométrage).
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Badge tone="green">Paiement jour même</Badge>
-            <Badge>Sans obligation</Badge>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid gap-5 sm:grid-cols-2">
-        <div ref={refName}>
-          <Field label="Nom" icon={ShieldCheck} error={errors.name}>
-            <input
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                setErrors((p: any) => ({ ...p, name: undefined }));
-              }}
-              placeholder="Votre nom"
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-900/10 focus:ring-4"
-              autoComplete="name"
-            />
-          </Field>
-        </div>
-
-        <div ref={refPhone}>
-          <Field label="Téléphone" icon={Phone} error={errors.phone}>
-            <input
-              value={phone}
-              onChange={(e) => {
-                setPhone(e.target.value);
-                setErrors((p: any) => ({ ...p, phone: undefined }));
-              }}
-              placeholder="Ex: 514-555-1234"
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-900/10 focus:ring-4"
-              inputMode="tel"
-              autoComplete="tel"
-            />
-          </Field>
-        </div>
-      </div>
-
-      <div ref={refEmail}>
-        <Field label="Courriel" icon={Mail} error={errors.email}>
-          <input
-            value={email}
-            onChange={(e) => {
-              setEmail(e.target.value);
-              setErrors((p: any) => ({ ...p, email: undefined }));
-            }}
-            placeholder="Ex: vous@email.com"
-            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-900/10 focus:ring-4"
-            inputMode="email"
-            autoComplete="email"
-          />
-        </Field>
-      </div>
-
-      <div ref={refAddress}>
-        <Field
-          label="Adresse complète"
-          icon={MapPin}
-          error={errors.address}
-          hint="Autocomplete possible (à brancher Google Places si voulu)"
-        >
-          <input
-            value={address}
-            onChange={(e) => {
-              setAddress(e.target.value);
-              setErrors((p: any) => ({ ...p, address: undefined }));
-            }}
-            placeholder="Numéro, rue, ville"
-            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-900/10 focus:ring-4"
-            autoComplete="street-address"
-          />
-          <div className="mt-2 text-xs text-slate-500">
-            Astuce: sur mobile, le clavier confirme souvent l'adresse plus vite grâce à l'autocomplete du navigateur.
-          </div>
-        </Field>
-      </div>
-
-      <Field label="Préférence de paiement" icon={CreditCard}>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => setPayPref("interac")}
-            className={
-              "rounded-2xl border p-4 text-left shadow-sm transition " +
-              (payPref === "interac"
-                ? "border-slate-900 bg-slate-900 text-white"
-                : "border-slate-200 bg-white hover:shadow-md")
-            }
-          >
-            <div className="flex items-center gap-2">
-              <CreditCard className={"h-4 w-4 " + (payPref === "interac" ? "text-white/80" : "text-slate-500")} />
-              <div className="text-sm font-semibold">Virement Interac</div>
-            </div>
-            <div className={"mt-1 text-xs " + (payPref === "interac" ? "text-white/80" : "text-slate-600")}>
-              Rapide, sans argent comptant
-            </div>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setPayPref("cash")}
-            className={
-              "rounded-2xl border p-4 text-left shadow-sm transition " +
-              (payPref === "cash"
-                ? "border-slate-900 bg-slate-900 text-white"
-                : "border-slate-200 bg-white hover:shadow-md")
-            }
-          >
-            <div className="flex items-center gap-2">
-              <Banknote className={"h-4 w-4 " + (payPref === "cash" ? "text-white/80" : "text-slate-500")} />
-              <div className="text-sm font-semibold">Comptant</div>
-            </div>
-            <div className={"mt-1 text-xs " + (payPref === "cash" ? "text-white/80" : "text-slate-600")}>
-              Paiement sur place (si disponible)
-            </div>
-          </button>
-        </div>
-      </Field>
-
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="text-sm font-extrabold text-slate-900">Consentements</div>
-            <div className="mt-1 text-sm text-slate-600">
-              Obligatoires pour réserver. Clair, simple, sans piège.
-            </div>
-          </div>
-          <Badge>Données sécurisées</Badge>
-        </div>
-
-        <div className="mt-5 grid gap-3">
-          <div ref={refTerms} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <label className="flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                checked={termsAccepted}
-                onChange={(e) => {
-                  setTermsAccepted(e.target.checked);
-                  setErrors((p: any) => ({ ...p, terms: undefined }));
-                }}
-                className="mt-1 h-4 w-4 rounded border-slate-300"
-              />
-              <div className="w-full">
-                <div className="text-sm font-semibold text-slate-900">
-                  J'accepte les conditions & la politique de confidentialité <span className="text-rose-600">*</span>
-                </div>
-                <div className="mt-1 text-xs text-slate-600">
-                  Utilisation des données uniquement pour traiter votre demande et vous contacter.
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <a
-                    href="#"
-                    onClick={(ev) => {
-                      ev.preventDefault();
-                      alert("Lien à brancher: Conditions d'utilisation");
-                    }}
-                    className="text-xs font-bold text-slate-900 underline"
-                  >
-                    Lire les conditions
-                  </a>
-                  <a
-                    href="#"
-                    onClick={(ev) => {
-                      ev.preventDefault();
-                      alert("Lien à brancher: Politique de confidentialité");
-                    }}
-                    className="text-xs font-bold text-slate-900 underline"
-                  >
-                    Lire la politique
-                  </a>
-                </div>
-              </div>
-            </label>
-
-            <AnimatePresence>
-              {errors.terms ? (
-                <motion.div
-                  initial={{ opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800"
-                >
-                  {errors.terms}
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-          </div>
-
-          <div ref={refInspection} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <label className="flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                checked={inspectionAccepted}
-                onChange={(e) => {
-                  setInspectionAccepted(e.target.checked);
-                  setErrors((p: any) => ({ ...p, inspection: undefined }));
-                }}
-                className="mt-1 h-4 w-4 rounded border-slate-300"
-              />
-              <div className="w-full">
-                <div className="text-sm font-semibold text-slate-900">
-                  J'accepte la vérification sur place (état + kilométrage) <span className="text-rose-600">*</span>
-                </div>
-                <div className="mt-1 text-xs text-slate-600">
-                  L'estimation affichée est un "jusqu'à". Le montant final est confirmé après inspection gratuite à
-                  domicile.
-                </div>
-              </div>
-            </label>
-
-            <AnimatePresence>
-              {errors.inspection ? (
-                <motion.div
-                  initial={{ opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800"
-                >
-                  {errors.inspection}
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <label className="flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                checked={marketingOptIn}
-                onChange={(e) => setMarketingOptIn(e.target.checked)}
-                className="mt-1 h-4 w-4 rounded border-slate-300"
-              />
-              <div className="w-full">
-                <div className="text-sm font-semibold text-slate-900">
-                  (Optionnel) Recevoir des offres / rappels par SMS ou courriel
-                </div>
-                <div className="mt-1 text-xs text-slate-600">Vous pouvez vous désinscrire en tout temps.</div>
-              </div>
-            </label>
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-2xl bg-slate-50 p-4 ring-1 ring-inset ring-slate-200">
-          <div className="flex items-start gap-3">
-            <ShieldCheck className="mt-0.5 h-5 w-5 text-slate-700" />
-            <div className="text-sm text-slate-700">
-              <span className="font-semibold">Important :</span> On ne partage jamais vos informations à des tiers.
-              Objectif: traiter votre demande + planifier la visite.
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-3xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 p-5 sm:p-6">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <div className="text-xs font-semibold text-slate-600">Récapitulatif</div>
-            <div className="mt-1 text-sm font-extrabold text-slate-900">Ce que vous réservez</div>
-          </div>
-          <Badge tone="green">Gratuit</Badge>
-        </div>
-
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <div className="rounded-2xl bg-white p-4 ring-1 ring-inset ring-slate-200">
-            <div className="text-xs font-semibold text-slate-600">Véhicule</div>
-            <div className="mt-1 text-sm font-bold text-slate-900">{vehicleLabel || "—"}</div>
-            <div className="mt-1 text-xs text-slate-500">{prettyKm(km)} km • {drivable === "oui" ? "Roule" : "Ne roule pas"}</div>
-          </div>
-
-          <div className="rounded-2xl bg-white p-4 ring-1 ring-inset ring-slate-200">
-            <div className="text-xs font-semibold text-slate-600">Estimation</div>
-            <div className="mt-1 text-xl font-extrabold text-slate-900">Jusqu'à {formatCad(upTo)}</div>
-            <div className="mt-1 text-xs text-slate-500">Confirmée après vérification sur place</div>
-          </div>
-
-          <div className="rounded-2xl bg-white p-4 ring-1 ring-inset ring-slate-200">
-            <div className="text-xs font-semibold text-slate-600">Créneau</div>
-            <div className="mt-1 text-sm font-bold text-slate-900">
-              {selectedSlot ? selectedSlot.label : "—"}
-            </div>
-            <div className="mt-1 text-xs text-slate-500">Semaine • 9h–17h</div>
-          </div>
-
-          <div className="rounded-2xl bg-white p-4 ring-1 ring-inset ring-slate-200">
-            <div className="text-xs font-semibold text-slate-600">Paiement</div>
-            <div className="mt-1 text-sm font-bold text-slate-900">
-              {payPref === "cash" ? "Comptant" : "Virement Interac"}
-            </div>
-            <div className="mt-1 text-xs text-slate-500">Préférence (selon disponibilité)</div>
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-2xl bg-white p-4 ring-1 ring-inset ring-slate-200">
-          <div className="flex items-start gap-3">
-            <Info className="mt-0.5 h-5 w-5 text-slate-600" />
-            <div className="text-sm text-slate-700">
-              Vous recevrez une confirmation par téléphone ou courriel. Besoin de modifier? Appelez{" "}
-              <a className="font-bold underline" href="tel:5141234567">
-                514-123-4567
-              </a>
-              .
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function ActionBar({ step, transitioning, submitted, submitting, goBack, goNext, primaryCtaLabel, helperText, canComputeSlots }: any) {
-  return (
-    <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/80 backdrop-blur">
-      <div className="mx-auto max-w-5xl px-4 py-3 sm:px-6">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center justify-between gap-2 sm:justify-start">
-            <button
-              type="button"
-              onClick={goBack}
-              disabled={step === 0 || transitioning || submitted}
-              className={
-                "inline-flex items-center gap-2 rounded-2xl px-4 py-3 text-sm font-extrabold ring-1 ring-inset transition " +
-                (step === 0 || transitioning || submitted
-                  ? "cursor-not-allowed bg-slate-100 text-slate-400 ring-slate-200"
-                  : "bg-white text-slate-900 ring-slate-200 hover:shadow-sm")
-              }
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Retour
-            </button>
-
-            <div className="sm:hidden text-right">
-              <div className="text-[11px] font-semibold text-slate-500">Étape</div>
-              <div className="text-sm font-extrabold text-slate-900">{step + 1}/6</div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <div className="hidden sm:block text-right">
-              <div className="text-xs font-semibold text-slate-600">{helperText}</div>
-              <div className="text-[11px] text-slate-500">
-                {step === 0
-                  ? "Sans obligation"
-                  : step === 3
-                  ? "Votre estimation est prête"
-                  : step === 4
-                  ? canComputeSlots
-                    ? "Sélectionnez un créneau"
-                    : "Entrez votre code postal"
-                  : step === 5
-                  ? "Vérifiez vos infos"
-                  : "Continuez"}
-              </div>
-            </div>
-
-            {step === 5 ? (
-              <button
-                type="submit"
-                disabled={transitioning || submitted || submitting}
-                className={
-                  "inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-extrabold transition " +
-                  (transitioning || submitted || submitting ? "bg-slate-200 text-slate-500" : "bg-slate-900 text-white hover:shadow-md")
-                }
-              >
-                <CheckCircle2 className="h-5 w-5" />
-                {primaryCtaLabel}
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={goNext}
-                disabled={transitioning || submitted}
-                className={
-                  "inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-extrabold transition " +
-                  (transitioning || submitted ? "bg-slate-200 text-slate-500" : "bg-slate-900 text-white hover:shadow-md")
-                }
-              >
-                {primaryCtaLabel}
-                <ArrowRight className="h-5 w-5" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {step === 5 && !submitted ? (
-          <div className="mt-2 text-[11px] text-slate-500">
-            En réservant, vous confirmez vos consentements. Aucun frais. Vous pouvez refuser l'offre après la visite.
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function Footer() {
-  return (
-    <div className="mt-6 grid gap-3 sm:grid-cols-3">
-      {[
-        { icon: ShieldCheck, title: "Sécurisé", desc: "HTTPS, données minimales, usage limité." },
-        { icon: CalendarClock, title: "Rapide", desc: "Réservation en ligne, visite gratuite." },
-        { icon: BadgeCheck, title: "Sans pression", desc: "Vous décidez après inspection." },
-      ].map((it) => (
-        <div key={it.title} className="rounded-2xl border border-slate-200 bg-white p-4">
-          <div className="flex items-start gap-3">
-            <div className="rounded-2xl bg-slate-900 p-2 text-white">
-              <it.icon className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-sm font-extrabold text-slate-900">{it.title}</div>
-              <div className="mt-1 text-sm text-slate-600">{it.desc}</div>
-            </div>
-          </div>
-        </div>
-      ))}
     </div>
   );
 }

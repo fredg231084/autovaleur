@@ -11,7 +11,7 @@ export function Field({
 }: {
   label: string;
   hint?: string;
-  icon?: React.ComponentType<any>;
+  icon?: React.ComponentType<{ className?: string }>;
   error?: string;
   children: React.ReactNode;
 }) {

@@ -55,7 +55,7 @@ export function generateTimeSlots(slotType: SlotType, postalRaw: string, now = n
 
   const days: Date[] = [];
   if (slotType === "week") {
-    let d = new Date(startDay);
+    const d = new Date(startDay);
     while (days.length < 5) {
       if (!isWeekend(d)) days.push(new Date(d));
       d.setDate(d.getDate() + 1);
