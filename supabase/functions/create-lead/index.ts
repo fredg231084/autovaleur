@@ -138,7 +138,9 @@ function validatePayload(
     } else if (new Date(payload.selected_slot_datetime).getTime() <= Date.now()) {
       errors.push("selected_slot_datetime must be in the future");
     }
-    if (!payload.client_email) errors.push("client_email is required");
+    // Email stays OPTIONAL even at completion (B funnel is phone-first); the
+    // client confirmation email is simply skipped when it's absent. If present,
+    // it must be well-formed.
     if (payload.client_email && !isValidEmail(payload.client_email)) {
       errors.push("Invalid email format");
     }
@@ -506,7 +508,7 @@ Deno.serve(async (req: Request) => {
         slot_type: payload.slot_type || "",
         selected_slot_id: payload.selected_slot_id || "",
         selected_slot_datetime: payload.selected_slot_datetime,
-        client_email: payload.client_email,
+        client_email: payload.client_email || null,
         client_address: payload.client_address,
         payment_preference: payload.payment_preference || "interac",
         terms_accepted: payload.terms_accepted ?? false,

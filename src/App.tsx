@@ -20,7 +20,7 @@ import {
   BadgeCheck,
   Scale,
 } from "lucide-react";
-import { submitLead } from './lib/api';
+import { completeLead } from './lib/api';
 import { clamp, formatCad, prettyKm, normalizePostal, isValidPostal, isValidEmail } from "./lib/format";
 import { generateTimeSlots, type SlotType, type TimeSlot } from "./lib/slots";
 import { MAKES, MODELS_BY_MAKE, CURRENT_YEAR, YEARS } from "./lib/vehicles";
@@ -261,14 +261,13 @@ export default function AutoValeurWidget() {
     try {
       setSubmitting(true);
 
-      const leadData = {
+      await completeLead({
         vehicle_year: year,
         vehicle_make: make,
         vehicle_model: model,
         vin: vin,
         km: km,
         drivable: drivable === 'oui',
-        up_to: upTo,
         postal_code: postal,
         slot_type: slotType,
         selected_slot_id: selectedSlotId,
@@ -281,9 +280,7 @@ export default function AutoValeurWidget() {
         terms_accepted: termsAccepted,
         inspection_accepted: inspectionAccepted,
         marketing_opt_in: marketingOptIn,
-      };
-
-      await submitLead(leadData);
+      });
       setSubmitted(true);
     } catch (error) {
       console.error('Submission failed:', error);
