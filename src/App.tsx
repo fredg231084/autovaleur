@@ -299,6 +299,14 @@ export default function AutoValeurWidget() {
 
   async function submit(ev: React.FormEvent) {
     ev.preventDefault();
+
+    // The form wraps every step, so an Enter keypress in any field fires this.
+    // On non-final steps, advance instead of running the finish submission.
+    if (step !== 5) {
+      goNext();
+      return;
+    }
+
     const v = validateFinish();
     setErrors(v);
     if (v.address || v.email || v.consent) {
