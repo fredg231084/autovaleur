@@ -97,6 +97,84 @@ export async function fetchLeadMetrics(): Promise<LeadMetrics> {
   return { total, partial, new: n, contacted, bought, lost };
 }
 
+// Full lead record for the detail screen (everything the list omits).
+export interface LeadDetail extends LeadRow {
+  vin: string;
+  client_address: string | null;
+  payment_preference: string | null;
+  terms_accepted: boolean;
+  inspection_accepted: boolean;
+  marketing_opt_in: boolean;
+  selected_slot_id: string | null;
+  status_updated_at: string | null;
+  updated_at: string | null;
+  // First-touch tracking block.
+  content_first: string;
+  term_first: string;
+  referrer_first: string;
+  landing_page_first: string;
+  first_seen_at: string | null;
+  entry_page: string;
+  app_entry_url: string;
+  flow_id: string;
+}
+
+export interface LeadNote {
+  id: string;
+  note_text: string;
+  created_at: string;
+}
+
+export interface StatusHistoryEntry {
+  id: string;
+  old_status: string;
+  new_status: string;
+  changed_at: string;
+  notes: string;
+}
+
+export async function fetchLead(id: string): Promise<LeadDetail | null> {
+  const { data, error } = await supabase
+    .from('leads')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as unknown as LeadDetail) ?? null;
+}
+
+export async function fetchLeadNotes(id: string): Promise<LeadNote[]> {
+  const { data, error } = await supabase
+    .from('lead_notes')
+    .select('id, note_text, created_at')
+    .eq('lead_id', id)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as unknown as LeadNote[];
+}
+
+export async function addLeadNote(id: string, text: string): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  const createdBy = userData.user?.id;
+  if (!createdBy) throw new Error('Not authenticated');
+  const { error } = await supabase.from('lead_notes').insert({
+    lead_id: id,
+    created_by: createdBy, // required by the INSERT policy (= auth.uid())
+    note_text: text,
+  });
+  if (error) throw error;
+}
+
+export async function fetchStatusHistory(id: string): Promise<StatusHistoryEntry[]> {
+  const { data, error } = await supabase
+    .from('lead_status_history')
+    .select('id, old_status, new_status, changed_at, notes')
+    .eq('lead_id', id)
+    .order('changed_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as unknown as StatusHistoryEntry[];
+}
+
 // Flip a lead's status and record it in lead_status_history. The history INSERT
 // policy requires changed_by = auth.uid(), so we read the current user first.
 export async function updateLeadStatus(

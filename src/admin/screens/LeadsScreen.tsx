@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatCad, prettyKm } from '../../lib/format';
+import { fmtDate, fmtDateTime } from '../format';
 import {
   fetchLeads,
   fetchLeadMetrics,
@@ -12,33 +13,6 @@ import {
   type LeadStatus,
 } from '../leads';
 import { MetricCard, Pill, Spinner, ErrorNote, EmptyState } from '../ui';
-
-function fmtDate(iso: string | null): string {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleDateString('fr-CA', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-    });
-  } catch {
-    return iso;
-  }
-}
-
-function fmtDateTime(iso: string | null): string {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleString('fr-CA', {
-      day: '2-digit',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return iso;
-  }
-}
 
 function StatusSelect({
   lead,
