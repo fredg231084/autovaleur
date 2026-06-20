@@ -175,6 +175,57 @@ export async function fetchStatusHistory(id: string): Promise<StatusHistoryEntry
   return (data ?? []) as unknown as StatusHistoryEntry[];
 }
 
+// A make/model/year combo that has shown up in leads but has no resolved
+// estimate yet — the implicit "to-price" queue.
+export interface UnpricedCar {
+  make: string;
+  model: string;
+  year: string;
+  count: number; // how many leads are waiting on this car
+}
+
+// Leads where up_to IS NULL (the estimate lookup didn't resolve), grouped by
+// make/model/year. Cars that already have a vehicle_prices row are excluded —
+// up_to is frozen at lead-creation time, so once a car is priced its old leads
+// would otherwise haunt the queue forever. Sorted most-waited-on first.
+export async function fetchUnpricedCars(): Promise<UnpricedCar[]> {
+  const [leadsRes, pricesRes] = await Promise.all([
+    supabase
+      .from('leads')
+      .select('vehicle_make, vehicle_model, vehicle_year')
+      .is('up_to', null),
+    supabase.from('vehicle_prices').select('make, model, year'),
+  ]);
+  if (leadsRes.error) throw leadsRes.error;
+  if (pricesRes.error) throw pricesRes.error;
+
+  const priced = new Set(
+    (pricesRes.data ?? []).map(
+      (p) =>
+        `${String(p.make).trim().toLowerCase()}|${String(p.model).trim().toLowerCase()}|${p.year}`
+    )
+  );
+
+  const groups = new Map<string, UnpricedCar>();
+  for (const r of leadsRes.data ?? []) {
+    if (!r.vehicle_make || !r.vehicle_model || !r.vehicle_year) continue;
+    const make = String(r.vehicle_make).trim();
+    const model = String(r.vehicle_model).trim();
+    const year = String(r.vehicle_year).trim();
+    const yearNum = parseInt(year, 10);
+    if (!Number.isFinite(yearNum)) continue;
+
+    const key = `${make.toLowerCase()}|${model.toLowerCase()}|${yearNum}`;
+    if (priced.has(key)) continue;
+
+    const existing = groups.get(key);
+    if (existing) existing.count += 1;
+    else groups.set(key, { make, model, year, count: 1 });
+  }
+
+  return [...groups.values()].sort((a, b) => b.count - a.count);
+}
+
 // Flip a lead's status and record it in lead_status_history. The history INSERT
 // policy requires changed_by = auth.uid(), so we read the current user first.
 export async function updateLeadStatus(
